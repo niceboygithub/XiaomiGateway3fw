@@ -25,12 +25,14 @@ The repository includes the following feature.
 4. original firmware
 
 	a. Roll back to original firmware by fw_update.
+```
+		fw_update linux.bin
+```
 
-	b. Update Silicon Lab. EFR32BG by run_ble_dfu.sh
-		for example
-		'''
+	b. Update Silicon Lab. EFR32BG by run_ble_dfu.sh, for example:
+```
 		run_ble_dfu.sh /dev/ttyS1 full.gbl_1.4.7_0065.bin 107 1
-		'''
+```
 
 5. stock firmware
 
