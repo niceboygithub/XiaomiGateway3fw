@@ -14,7 +14,7 @@ The repository includes the following feature.
  
 2. raw firmware
 
-	If using dd to flash, need to use raw typen with padded.
+	If using dd to flash, need to use raw typen with padded (boundary 0x20000).
 
 3. modified firmware
 
@@ -24,10 +24,16 @@ The repository includes the following feature.
 
 4. original firmware
 
-	Roll back to original firmware by fw_update.
+	a. Roll back to original firmware by fw_update.
+
+	b. Update Silicon Lab. EFR32BG by run_ble_dfu.sh
+		for example
+		'''
+		run_ble_dfu.sh /dev/ttyS1 full.gbl_1.4.7_0065.bin 107 1
+		'''
 
 5. stock firmware
 
 6. scripts
 
-   The python script utility to generate firmware and others.
+   The python script utility to generate firmware and other functions.
