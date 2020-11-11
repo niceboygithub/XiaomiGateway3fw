@@ -11,7 +11,7 @@ The repository includes the following feature.
 
 2. raw firmware
 
-    If using dd to flash, need to use raw typen with padded (boundary 0x20000).
+    If using dd or bootloader to flash, need to use raw typen with padded (boundary 0x20000).
 
 3. modified firmware
 
