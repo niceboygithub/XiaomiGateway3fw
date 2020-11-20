@@ -1,0 +1,4 @@
+pyserial
+xmodem
+tftpy
+pyprind
