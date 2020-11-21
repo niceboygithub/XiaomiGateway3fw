@@ -7,13 +7,45 @@ supported: Windows/MacOS/Ubuntu
 4. Flash the firmware in bootloader via ethernet/xmodem/uart
 
 # Howto:
-How to use this uilts to flash firmware:
+How to flash firmware:
 
 1. install Pythone 3.7 above (if do not want to install Python, use gateway3utils.exe instand)
-2. pip install -r requirements.txt
-3a. Update stock firmware by xmodem.
-	`python gateway3utils.py -x -c [COM PORT] -t all_1 -f firmware_1.4.6_0012.bin`
-3b. Update linux in slot 0 by xmodem.
-	`python gateway3utils.py -x -c [COM PORT] -t linux_0 -f linux_1.4.6_0012.bin_raw`
-3c. Update rootfs in slot 0 by xmodem.
-	`python gateway3utils.py -x -c [COM PORT] -t rootfs_0 -f rootfs_1.4.6_0012.bin_raw`
+
+2. install pip and install requirements
+
+```bash
+pip install -r requirements.txt`
+```
+
+3. a. Update stock firmware to slot 1 by xmodem.
+
+```bash
+python gateway3utils.py -x -c [COM PORT] -t all_1 -f firmware_1.4.6_0012.bin`
+```
+
+3. b. Update linux to slot 0 by xmodem.
+
+```bash
+python gateway3utils.py -x -c [COM PORT] -t linux_0 -f linux_1.4.6_0012.bin_raw`
+```
+
+3. c. Update rootfs to slot 0 by xmodem.
+
+```bash
+python gateway3utils.py -x -c [COM PORT] -t rootfs_0 -f rootfs_1.4.6_0012.bin_raw
+```
+
+How to generate firmware for fw_update from raw:
+* Generate linux firmware for slot 0
+
+```bash
+python gateway3utils.py -t linux_0 -f linux_1.4.6_0043.bin`
+```
+
+How to generate commands of programming boot_info
+1. create boot_info.yaml and fill up sum and size of linux and rootfs etc. (see example boot_info.yaml)
+2. then use this util
+
+```bash
+python gateway3utils.py -i boot_info.yaml
+```

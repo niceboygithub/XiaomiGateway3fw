@@ -65,7 +65,8 @@ def calc_checksum_of_firmware(fwfile, log=False):
 
 
 def calc_sum_of_firmware(fwfile, log=False):
-    """ calc sum of firmware """
+    """ calc sum of firmware
+        help from @Sebastian """
     official_firmware_sum = {
         "linux_1.4.7_0065.bin": 0xcb43,
         "rootfs_1.4.7_0065.bin": 0x742c,
@@ -80,31 +81,14 @@ def calc_sum_of_firmware(fwfile, log=False):
         "rootfs_1.4.7_0065_modified.bin": 0x742c
     }
 
-    last_calc = False
-    nsum = 0xffff
+    nsum = 0x0
     with open(fwfile, 'rb') as f_in:
-        # Read first 4 bytes of data
         while True:
-            byte = f_in.read(4)
+            byte = f_in.read(2)
             if not byte:
                 break
-            byte0 = int.from_bytes(byte[0:1], byteorder='little')
-            byte1 = int.from_bytes(byte[1:2], byteorder='little')
-            byte2 = int.from_bytes(byte[2:3], byteorder='little')
-            byte3 = int.from_bytes(byte[3:4], byteorder='little')
-
-            if ((byte0 >= 1) or (byte1 >= 1) or (byte2 >= 0xfe)
-                    or (byte3 >= 0xfe)):
-                nsum = nsum - 1
-            if byte0 >= 1 and last_calc:
-                if (byte1 >= 1) and (byte2 >= 0xfe):
-                    nsum = nsum - 1
-            last_calc = ((byte0 >= 1) and (byte1 >= 1) and
-                         (byte2 >= 0xfe) and (byte3 >= 0xfe))
-            # print(last_calc)
-    # The result is wrong, still working on it
-    if log:
-        print('{}'.format(hex(nsum & 0xFFFF)))
+            byte = int.from_bytes(byte[0:2], byteorder='big')
+            nsum = nsum + byte
 
     for key, val in official_firmware_sum.items():
         if key in os.path.basename(fwfile):
@@ -443,7 +427,9 @@ def update_boot_info(console, fw_type, new_sum, new_size):
         new_size, new_sum)
     console.write(command.encode())
 
-    command = "boot_ctrl set_{}_newest {}\n".format(
+    wait_for_realtek_cli(console)
+
+    command = "boot_ctrl set_{}newest {}\n".format(
         fw_type[:-1], fw_type[-1:])
     console.write(command.encode())
 
@@ -668,7 +654,7 @@ def _tftp_server():
 
 
 def burn_by_tftp(params, in_flasher=False):
-    # pylint: disable=too-many-statements, unused-argument
+    # pylint: disable=too-many-statements, unused-argument, too-many-locals
     """ burn by tftp """
     flasher_baudrate = 230400
 
@@ -759,6 +745,11 @@ def burn_by_tftp(params, in_flasher=False):
     console.write(command.encode())
     console.write(b'y\n')
     thread.join()
+
+    wait_for_realtek_cli(console)
+    sum_firmware = calc_sum_of_firmware(params['fwfile'])
+    update_boot_info(console, params['fwtype'],
+                     sum_firmware, os.stat(params['fwfile']).st_size)
     print("Program {} Done!".format(params['fwfile']))
     return True
 
@@ -920,7 +911,7 @@ def main():
     group.add_argument('-f', '--fle', dest='fwfile',
                        help='firmware file')
     group.add_argument('-t', '--fwype', dest='fwtype',
-                       help='The type of firmware,'
+                       help='The type of firmware, '
                        '[linux_0|linux_1|rootfs_0|rootfs_1|all_0|all_1]')
     group.add_argument('-c', '--comport', dest='comport',
                        help='The com port')
