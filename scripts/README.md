@@ -7,7 +7,7 @@ supported: Windows/MacOS/Ubuntu
 4. Flash the firmware in bootloader via ethernet/xmodem/uart
 
 # Howto:
-##How to flash firmware:
+## How to flash firmware:
 
 1- install Pythone 3.7 above (if do not want to install Python, use gateway3utils.exe instand)
 
@@ -29,7 +29,7 @@ python gateway3utils.py -x -c [COM PORT] -t rootfs_0 -f rootfs_1.4.6_0012.bin_ra
 ```
 
 
-##How to backup boot_info/factory/homekit parition:
+## How to backup boot_info/factory/homekit parition:
 * Backup factory partition
 
 ```bash
@@ -41,14 +41,14 @@ python gateway3utils.py -x -c [COM PORT] -t factory -f factory.bin
 python gateway3utils.py -x -c [COM PORT] -t boot_info -f boot_info.bin
 ```
 
-##How to generate firmware for fw_update from raw:
+## How to generate firmware for fw_update from raw:
 * Generate linux firmware for slot 0
 
 ```bash
 python gateway3utils.py -t linux_0 -f linux_1.4.6_0043.bin
 ```
 
-##How to generate commands to programming boot_info
+## How to generate commands to programming boot_info
 1. create boot_info.yaml and fill up sum and size of linux and rootfs etc. (see example boot_info.yaml)
 2. then use this util
 
@@ -56,7 +56,7 @@ python gateway3utils.py -t linux_0 -f linux_1.4.6_0043.bin
 python gateway3utils.py -i boot_info.yaml
 ```
 
-##How to generate password of telnet
+## How to generate password of telnet
 Get device id, key, and mac of gateway3
 ```bash
 python gateway3utils.py -e 123668888 -m 80:90:A0:C0:D0:E0 -k XW1ayuHmgLcKlNlL
