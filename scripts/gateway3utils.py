@@ -28,6 +28,21 @@ try:
 except ImportError:
     pass
 
+firmware_info = {
+    "bootloader": "0x00000000",
+    "boot_info": "0x000a0000",
+    "factory": "0x000c0000",
+    "mtd_oops": "0x000e0000",
+    "bbt": "0x00100000",
+    'linux_0': '0x00200000',
+    'rootfs_0': '0x00500000',
+    'linux_1': '0x01e00000',
+    'rootfs_1': '0x02100000',
+    "homekit": "0x03a00000",
+    "AppData": "0x03b00000",
+    "resvered_bb": "0x7320000"
+}
+
 
 def convert_cmdline(cmdline):
     # pylint: disable=line-too-long
@@ -348,30 +363,29 @@ def enter_bootrom_console_and_get_ready(console, debug=False):
         console.write(b"u")
         console.flush()
         time.sleep(.05)
-        if console.in_waiting:
-            try:
+        try:
+            if console.in_waiting:
                 data = str(console.read_until(), encoding="utf-8")
-            except UnicodeDecodeError:
-                pass
-            if debug:
-                print(data)
+        except UnicodeDecodeError:
+            pass
+        except OSError:
+            return False
+        if debug and console.in_waiting:
+            print(data)
         if "rlxlinux login" in data or "Linux version" in data:
             return False
         if "<RealTek>" in data:
             break
-    command = "\n"
-    console.write(command.encode())
+    console.write(b"\n")
 
     time.sleep(1)
     if console.in_waiting:
         console.read(console.in_waiting)
-    command = "\n"
-    console.write(command.encode())
+
+    console.write(b"\n")
     time.sleep(1)
-    command = "dbgmsg 3\n"
-    console.write(command.encode())
-    command = "ri 0 1 1\n"
-    console.write(command.encode())
+    console.write(b"dbgmsg 3\n")
+    console.write(b"ri 0 1 1\n")
 
     wait_for_realtek_cli(console)
     time.sleep(3)
@@ -381,7 +395,7 @@ def enter_bootrom_console_and_get_ready(console, debug=False):
     return True
 
 
-def check_comport_exist(comport):
+def _check_comport_exist(comport):
     """ check_comport_exist """
     comports = list_ports.comports()
     comport_exist = False
@@ -395,7 +409,7 @@ def check_comport_exist(comport):
     return True
 
 
-def generate_padded_firmware(fwfile):
+def _generate_padded_firmware(fwfile):
     """ prepare padded firmware """
     fwsize = os.stat(fwfile).st_size
 
@@ -405,10 +419,7 @@ def generate_padded_firmware(fwfile):
         print("The raw firmware is invaild format.")
         return False
 
-    if fwsize % 0x20000 >= 1:
-        pad_number = 0x20000 - (fwsize % 0x20000)
-    else:
-        pad_number = 0
+    pad_number = 0x20000 - (fwsize % 0x20000) if fwsize % 0x20000 >= 1 else 0
 
     with open(fwfile, 'rb') as fw_flie:
         data = fw_flie.read()
@@ -417,6 +428,78 @@ def generate_padded_firmware(fwfile):
         fw_flie.write(data)
         fw_flie.write(bytearray(padding))
     return True
+
+
+def _bootrom_download_flasher(params, console, in_flasher):
+    # pylint: disable=unused-argument
+    # (100MHz >> 4) / baud rate
+    # baud rate (speed)     =   38400   |  115200   |  230400   |   460800
+    # error rate            = 0.0046875 | 0.0046875 | 0.0046918 | 0.04333550
+    flasher_baudrate = 230400
+
+    try:
+        if not in_flasher:
+            data = params['baudrate']
+        else:
+            data = flasher_baudrate
+        console = serial.Serial(params['comport'], data, timeout=10)
+    except serial.serialutil.SerialException:
+        print("Open COM Port ({}) Error!".format(params['comport']))
+        os.remove("{}_padding".format(params['fwfile']))
+        return None
+
+    def getc(size, timeout=1):
+        return console.read(size)
+
+    def putc(data, timeout=1):
+        return console.write(data)
+
+    fwsize = os.stat("./flasher.bin").st_size
+
+    if 'pyprind' in sys.modules:
+        def putc_user(data, timeout=1):
+            bar_user.update()
+            return console.write(data)
+
+        bar_user = pyprind.ProgBar(fwsize/128 - 1)
+
+        modem = XMODEM(getc, putc_user)
+    else:
+        modem = XMODEM(getc, putc)
+
+    if not in_flasher:
+        if not enter_bootrom_console_and_get_ready(console, params['debug']):
+            print("The gateway is not ready for download!")
+            return None
+
+        print("Downloading the flasher.")
+        console.write("xmrx 0xa0000000\n".encode())
+        time.sleep(1)
+
+        clear_serial_buffer(console)
+        if sys.platform == 'darwin':
+            console.close()
+            time.sleep(1)
+            console = serial.Serial(params['comport'],
+                                    params['baudrate'],
+                                    timeout=10)
+
+        with open("./flasher.bin", 'rb') as f_in:
+            modem.send(f_in)
+
+        console.write("j a0000000\n".encode())
+
+        console.close()
+        bar_user.update(force_flush=True)
+        bar_user.stop()
+
+        time.sleep(3)  # wait flasher boot up
+
+        console = serial.Serial(params['comport'],
+                                flasher_baudrate,
+                                timeout=3)
+
+    return console
 
 
 def update_boot_info(console, fw_type, new_sum, new_size):
@@ -435,8 +518,8 @@ def update_boot_info(console, fw_type, new_sum, new_size):
 
 
 def burn_by_uart(params, in_flasher=False):
-    # pylint: disable=too-many-statements, unused-argument
     """ burn by uart command """
+    console = None
 
     with open(params['fwfile'], 'rb') as f_in:
         raw = f_in.read(16)
@@ -445,41 +528,15 @@ def burn_by_uart(params, in_flasher=False):
                 f_out.write(f_in.read())
             params['fwfile'] = "{}_raw".format(params['fwfile'])
 
-    if not generate_padded_firmware(params['fwfile']):
+    if not _generate_padded_firmware(params['fwfile']):
         print("Generate padded firmware Failed!")
-        return False
+        return
 
-    try:
-        console = serial.Serial(params['comport'], params['baudrate'])
-    except serial.serialutil.SerialException:
-        print("Open COM Port ({}) Error!".format(params['comport']))
-        os.remove("{}_padding".format(params['fwfile']))
-        return False
+    console = _bootrom_download_flasher(params, console, in_flasher)
 
-    def getc(size, timeout=1):
-        return console.read(size)
-
-    def putc(data, timeout=1):
-        return console.write(data)
-
-    modem = XMODEM(getc, putc)
-
-    if not in_flasher:
-        if not enter_bootrom_console_and_get_ready(console):
-            print("The gateway is not ready for download!")
-            return False
-
-        console.write("xmrx 0xa0000000\n".encode())
-        time.sleep(1)
-        console.write(b"\n\n\n\n\n")
-
-        clear_serial_buffer(console)
-
-        with open("./flasher.bin", 'rb') as f_in:
-            modem.send(f_in)
-
-        console.write("j a0000000\n".encode())
-        time.sleep(3)  # wait flasher boot up
+    if console is None:
+        print("Goto flasher failed, try again.")
+        return
 
     console.write(b'\n')
 
@@ -503,7 +560,7 @@ def burn_by_uart(params, in_flasher=False):
             console.write(b'y\n')
             time.sleep(1)
             console.write(b'\n')
-            params['ddr_base'] = '0x81000000'
+            params['ddr_base'] = '0xa1000000'
             j = 0
         data = (int(((i + 15) / len(raw)) * 100))
         sys.stdout.write("Download progress: %d%%   \r" % (data))
@@ -517,84 +574,29 @@ def burn_by_uart(params, in_flasher=False):
 
 
 def burn_by_xmodem(params, in_flasher=False):
-    # pylint: disable=too-many-statements, unused-argument, too-many-branches
+    # pylint: disable=unused-argument
     """ burn by xmodem """
-    # (100MHz >> 4) / baud rate
-    # 38400 0.0046875
-    # 115200 0.0046875
-    # 230400 0.004691840277777777
-    # 460800 0.043335503472222224
-    flasher_baudrate = 230400
+    console = None
 
+    remove_rawfile = False
     with open(params['fwfile'], 'rb') as f_in:
         data = f_in.read(16)
         if data[:4] == b'cr6c' or data[:4] == b'r6cr':
             with open("{}_raw".format(params['fwfile']), 'wb') as f_out:
                 f_out.write(f_in.read())
             params['fwfile'] = "{}_raw".format(params['fwfile'])
+            remove_rawfile = True
 
-    if not generate_padded_firmware(params['fwfile']):
+    if not _generate_padded_firmware(params['fwfile']):
         print("Generate padded firmware Failed!")
         return False
 
-    try:
-        if not in_flasher:
-            data = params['baudrate']
-        else:
-            data = flasher_baudrate
-        console = serial.Serial(params['comport'], data, timeout=10)
-    except serial.serialutil.SerialException:
-        print("Open COM Port ({}) Error!".format(params['comport']))
-        os.remove("{}_padding".format(params['fwfile']))
+    console = _bootrom_download_flasher(params, console, in_flasher)
+
+    if console is None:
+        print("Goto flasher failed, try again.")
         return False
 
-    def getc(size, timeout=1):
-        return console.read(size)
-
-    def putc(data, timeout=1):
-        return console.write(data)
-
-    fwsize = os.stat("./flasher.bin").st_size
-
-    if 'pyprind' in sys.modules:
-        def putc_user(data, timeout=1):
-            bar_user.update(force_flush=True)
-            return console.write(data)
-
-        bar_user = pyprind.ProgBar(fwsize/128 - 1)
-
-        modem = XMODEM(getc, putc_user)
-    else:
-        modem = XMODEM(getc, putc)
-
-    if not in_flasher:
-        if not enter_bootrom_console_and_get_ready(console, params['debug']):
-            print("The gateway is not ready for download!")
-            return False
-
-        print("Downloading the flasher.")
-        console.write("xmrx 0xa0000000\n".encode())
-        time.sleep(1)
-
-        clear_serial_buffer(console)
-        if sys.platform == 'darwin':
-            console.close()
-            time.sleep(1)
-            console = serial.Serial(params['comport'],
-                                    params['baudrate'],
-                                    timeout=10)
-
-        with open("./flasher.bin", 'rb') as f_in:
-            modem.send(f_in)
-
-        console.write("j a0000000\n".encode())
-
-        console.close()
-
-        time.sleep(3)  # wait flasher boot up
-        console = serial.Serial(params['comport'],
-                                flasher_baudrate,
-                                timeout=3)
     console.write(b'\n\n')
 
     wait_for_realtek_cli(console)
@@ -608,8 +610,17 @@ def burn_by_xmodem(params, in_flasher=False):
     print("Now transmitting {}".format(params['fwfile']))
     fwsize = os.stat("{}_padding".format(params['fwfile'])).st_size
 
+    def getc(size, timeout=1):
+        return console.read(size)
+
+    def putc(data, timeout=1):
+        return console.write(data)
+
     if 'pyprind' in sys.modules:
-        bar_user.stop()
+        def putc_user(data, timeout=1):
+            bar_user.update()
+            return console.write(data)
+
         bar_user = pyprind.ProgBar(fwsize/1024 - 1, width=60)
         modem = XMODEM1k(getc, putc_user)
     else:
@@ -638,7 +649,10 @@ def burn_by_xmodem(params, in_flasher=False):
     update_boot_info(console, params['fwtype'], sum_firmware, fwsize)
 
     console.close()
-    os.remove("{}_padding".format(params['fwfile']))
+    if remove_rawfile and os.path.exists(params['fwfile']):
+        os.remove(params['fwfile'])
+    if os.path.exists("{}_padding".format(params['fwfile'])):
+        os.remove("{}_padding".format(params['fwfile']))
     print("Programming {} Done!".format(params['fwfile']))
     return True
 
@@ -654,18 +668,19 @@ def _tftp_server():
 
 
 def burn_by_tftp(params, in_flasher=False):
-    # pylint: disable=too-many-statements, unused-argument, too-many-locals
     """ burn by tftp """
-    flasher_baudrate = 230400
+    console = None
 
+    remove_rawfile = False
     with open(params['fwfile'], 'rb') as f_in:
         raw = f_in.read(16)
         if raw[:4] == b'cr6c' or raw[:4] == b'r6cr':
             with open("{}_raw".format(params['fwfile']), 'wb') as f_out:
                 f_out.write(f_in.read())
             params['fwfile'] = "{}_raw".format(params['fwfile'])
+            remove_rawfile = True
 
-    if not generate_padded_firmware(params['fwfile']):
+    if not _generate_padded_firmware(params['fwfile']):
         print("Generate padded firmware Failed!")
         return False
 
@@ -673,57 +688,11 @@ def burn_by_tftp(params, in_flasher=False):
         print("Please install tftpy!")
         return False
 
-    try:
-        if not in_flasher:
-            baudrate = params['baudrate']
-        else:
-            baudrate = flasher_baudrate
-        console = serial.Serial(params['comport'],
-                                baudrate,
-                                timeout=10)
-    except serial.serialutil.SerialException:
-        print("Open COM Port ({}) Error!".format(params['comport']))
-        os.remove("{}_padding".format(params['fwfile']))
+    console = _bootrom_download_flasher(params, console, in_flasher)
+
+    if console is None:
+        print("Goto flasher failed, try again.")
         return False
-
-    def getc(size, timeout=1):
-        return console.read(size)
-
-    def putc(data, timeout=1):
-        return console.write(data)
-
-    if 'pyprind' in sys.modules:
-        def putc_user(data, timeout=1):
-            bar_user.update()
-            return console.write(data)
-
-        bar_user = pyprind.ProgBar(
-            os.stat(params['fwfile']).st_size/128+64)
-
-        modem = XMODEM(getc, putc_user)
-    else:
-        modem = XMODEM(getc, putc)
-
-    if not in_flasher:
-        if not enter_bootrom_console_and_get_ready(console):
-            print("The gateway is not ready for download!")
-            return False
-
-        console.write("xmrx 0xa0000000\n".encode())
-        time.sleep(3)
-
-        clear_serial_buffer(console)
-
-        with open("./flasher.bin", 'rb') as f_in:
-            modem.send(f_in)
-
-        console.write("j a0000000\n".encode())
-        console.close()
-
-        time.sleep(3)  # wait flasher boot up
-        console = serial.Serial(params['comport'],
-                                flasher_baudrate,
-                                timeout=10)
 
     thread = threading.Thread(target=_tftp_server)
     thread.running = True
@@ -750,6 +719,11 @@ def burn_by_tftp(params, in_flasher=False):
     sum_firmware = calc_sum_of_firmware(params['fwfile'])
     update_boot_info(console, params['fwtype'],
                      sum_firmware, os.stat(params['fwfile']).st_size)
+
+    if os.path.exists("{}_padding".format(params['fwfile'])):
+        os.remove("{}_padding".format(params['fwfile']))
+    if remove_rawfile and os.path.exists(params['fwfile']):
+        os.remove(params['fwfile'])
     print("Program {} Done!".format(params['fwfile']))
     return True
 
@@ -803,20 +777,6 @@ def burn_all_firmwares(params):
 def burn_firmware(params):
     # pylint: disable=too-many-return-statements, too-many-branches
     """ burn_firmware """
-    firmware_info = {
-        "bootloader": "0x00000000",
-        "boot_info": "0x000a0000",
-        "factory": "0x000c0000",
-        "mtd_oops": "0x000e0000",
-        "bbt": "0x00100000",
-        'linux_0': '0x00200000',
-        'rootfs_0': '0x00500000',
-        'linux_1': '0x01e00000',
-        'rootfs_1': '0x02100000',
-        "homekit": "0x03a00000",
-        "AppData": "0x03b00000",
-        "resvered_bb": "0x7320000"
-    }
 
     if not os.path.exists("./flasher.bin"):
         print("The flahser.bin is not exist!")
@@ -833,17 +793,15 @@ def burn_firmware(params):
         if data[:4] != b'MIOT':
             print('{} is not vaild firmware file'.format(params['fwfile']))
             return
-    else:
-        if offset == '0':
-            print('Unknow firmware type!')
-            return
+    elif offset == '0':
+        print('Unknow firmware type!')
+        return
 
-    params['ddr_base'] = '0xa1000000'
     if "serial" not in sys.modules:
         print("Need install pyserial for python!")
         return
 
-    if not check_comport_exist(params['comport']):
+    if not _check_comport_exist(params['comport']):
         return
     if params['tftp']:
         if 'all' in params['fwtype']:
@@ -854,9 +812,7 @@ def burn_firmware(params):
             burn_all_firmwares(params)
         else:
             params['offset'] = offset
-            if burn_by_tftp(params):
-                print("Need to update boot info according to {}.".format(
-                    params['fwfile']))
+            burn_by_tftp(params)
         return
     if params['xmodem']:
         if 'all' in params['fwtype']:
@@ -867,13 +823,10 @@ def burn_firmware(params):
             burn_all_firmwares(params)
         else:
             params['offset'] = offset
-            if burn_by_xmodem(params):
-                print("Need to update boot info according to {}.".format(
-                    params['fwfile']))
+            burn_by_xmodem(params)
         return
     # just for test
     burn_by_uart(params)
-    return
 
 
 def generate_telnet_password(did, mac, key):
@@ -886,11 +839,68 @@ def generate_telnet_password(did, mac, key):
     signature = base64.b64encode(hmac.new(message.hexdigest().encode(),
                                           msg=key.encode(),
                                           digestmod=hashlib.sha256).digest())
-    print(signature[-16:])
+    print("The password of telnet is {}".format(signature[-16:]))
+
+
+def backup_partition(params):
+    """ backup partition """
+    console = None
+    firmware_backup_size = {'factory': 512,
+                            # 'bootloader': 131072,
+                            'boot_info': 64,
+                            'homekit': 4352}
+
+    if os.path.exists(params['fwfile']):
+        data = input('The {} is exist, do you want to overwrite?(y/n)'.format(
+            params['fwfile']))
+        if data.upper() == 'N':
+            return
+
+    if firmware_info.get(params['fwtype'], '0') == '0':
+        print("Unknown firmware type.")
+        return
+
+    console = _bootrom_download_flasher(params, console, False)
+
+    if console is None:
+        print("Goto flasher failed, try again.")
+        return
+
+    console.write(b'\n\n')
+
+    wait_for_realtek_cli(console)
+    fwsize = firmware_backup_size.get(params['fwtype'], 0)
+    if fwsize == 0:
+        print('{} is not support yet!'.format(params['fwtype']))
+        return
+
+    command = 'NANDR {} {} {}\n'.format(hex(int(firmware_info.get(
+        params['fwtype'], '0'), 0)), params['ddr_base'], hex(fwsize))
+
+    console.write(command.encode())
+    console.write(b'y\n')
+    clear_serial_buffer(console)
+    wait_for_realtek_cli(console)
+    command = 'DB {} {}\n'.format(params['ddr_base'], fwsize)
+    console.write(command.encode())
+    raw = ''
+    data = str(console.read_until(), encoding="utf-8")
+    while "<RealTek>" not in data:
+        raw = "{}{}".format(raw, data)
+        data = str(console.read_until(), encoding="utf-8")
+    with open(params['fwfile'], 'wb') as f_out:
+        for i in raw.splitlines():
+            if 'A100' in i:
+                data = i.split(': ')[1].split(
+                    '  |')[0].rstrip().replace('  ', ' ')
+                for j in data.split(' '):
+                    f_out.write(int(j, 16).to_bytes(
+                        1, byteorder='big', signed=False))
 
 
 def main():
-    # pylint: disable=too-many-return-statements, too-many-branches
+    # pylint: disable=too-many-branches, too-many-statements
+    # pylint: disable=too-many-return-statements
     '''
     Using Python to burn firmware via UART/Xmodem/Tftp
     '''
@@ -924,9 +934,11 @@ def main():
     group.add_argument('-s', '--sum', action='store_true',
                        help='Sum of firmware file')
     group.add_argument('-u', '--checksum', action='store_true',
-                       help='checkum of firmware file')
+                       help='Checkum of firmware file')
     group.add_argument('-g', '--generate', action='store_true',
                        help='Generate firmware file for fw_update')
+    group.add_argument('-a', '--backup', action='store_true',
+                       help='Backup fatory/boot_info/homekit partition')
     group.add_argument('-k', '--key', dest='key',
                        help='Xiaomi key')
     group.add_argument('-m', '--mac', dest='mac',
@@ -963,26 +975,30 @@ def main():
         convert_cmdline(args.cmdline)
         return
 
+    baudrate = args.baudrate if args.baudrate else 38400
+
+    params = {'ddr_base': '0xa1000000',
+              'xmodem': args.xmodem,
+              'tftp': args.tftp,
+              'comport': args.comport,
+              'baudrate': baudrate,
+              'fwtype': args.fwtype,
+              'fwfile': args.fwfile,
+              'debug': args.debug}
+    if args.backup and args.fwfile and args.comport:
+        backup_partition(params)
+        return
+
     if args.fwfile and args.fwtype and args.comport:
         if "serial" not in sys.modules or "xmodem" not in sys.modules:
             print("Notice: serial or xmodem module is not installed!")
             print("        pip install -r requirements.txt")
-        baudrate = 38400
-        if args.baudrate:
-            baudrate = args.baudrate
         if args.xmodem and args.tftp:
             print("Please choose one transmit type!")
             return
-        params = {'xmodem': args.xmodem,
-                  'tftp': args.tftp,
-                  'comport': args.comport,
-                  'baudrate': baudrate,
-                  'fwtype': args.fwtype,
-                  'fwfile': args.fwfile,
-                  'debug': args.debug}
         burn_firmware(params)
         return
-    print("Invaild arguments")
+    print("Invaild arguments, Use -h or --help to known how to use.")
 
 
 if __name__ == "__main__":
