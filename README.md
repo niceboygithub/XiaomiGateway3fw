@@ -35,4 +35,4 @@ run_ble_dfu.sh /dev/ttyS1 full.gbl_1.4.7_0065.bin 107 1
 6. scripts
 
    The python script utility to generate firmware, calcuate checksum of boot_info and other functions.
-[howot](https://github.com/niceboygithub/XiaomiGateway3fw/blob/master/scripts/README.md "howto")
+[howto](https://github.com/niceboygithub/XiaomiGateway3fw/blob/master/scripts/README.md "howto")

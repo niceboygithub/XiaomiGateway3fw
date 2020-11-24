@@ -4,7 +4,7 @@ supported: Windows/MacOS/Ubuntu
 1. Generated firmware for fw_update.
 2. Generate the commands to write boot_info in bootloader
 3. Generate the commands for command line of kernel
-4. Flash the firmware in bootloader via ethernet/xmodem/uart
+4. Flash the firmware in bootloader by tftp/xmodem/uart or via telnet
 
 # Howto:
 ## How to flash firmware:
@@ -13,19 +13,36 @@ supported: Windows/MacOS/Ubuntu
 
 2- install pip and install requirements
 ```bash
-pip install -r requirements.txt`
+pip install -r requirements.txt
 ```
 3-a Update stock firmware to slot 1 by xmodem.
 ```bash
-python gateway3utils.py -x -c [COM PORT] -t all_1 -f firmware_1.4.6_0012.bin
+cd scripts
+python gateway3utils.py -x -c [COM PORT] -t all_1 -f ..\stock\firmware_1.4.6_0012.bin
 ```
 3-b Update linux to slot 0 by xmodem.
 ```bash
-python gateway3utils.py -x -c [COM PORT] -t linux_0 -f linux_1.4.6_0012.bin_raw
+cd scripts
+python gateway3utils.py -x -c [COM PORT] -t linux_0 -f ..\original\1.4.6_0012\linux_1.4.6_0012.bin
 ```
 3-c. Update rootfs to slot 0 by xmodem.
 ```bash
-python gateway3utils.py -x -c [COM PORT] -t rootfs_0 -f rootfs_1.4.6_0012.bin_raw
+cd scripts
+python gateway3utils.py -x -c [COM PORT] -t rootfs_0 -f ..\original\1.4.6_0012\rootfs_1.4.6_0012.bin
+```
+3-d. Update rootfs to slot 1 via telnet.
+```bash
+cd scripts
+python gateway3utils.py -n -r [IP ADDRESS] -t rootfs_0 -f ..\original\1.4.6_0012\rootfs_1.4.6_0012.bin
+```
+3-e. Update rootfs to slot 1 via telnet.
+```bash
+cd scripts
+python gateway3utils.py -n -r [IP ADDRESS] -t rootfs_1 -f ..\modified\1.4.7_0065\rootfs_1.4.7_0065_modified.bin
+```
+or
+```bash
+gateway3utils.exe -n -r [IP ADDRESS] -t rootfs_1 -f modified\1.4.7_0065\rootfs_1.4.7_0065_modified.bin
 ```
 
 

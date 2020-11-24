@@ -10,12 +10,19 @@ import hashlib
 import hmac
 import base64
 import re
+import socket
 
 try:
     import tkinter
     import serial
     from serial.tools import list_ports
     from xmodem import XMODEM, XMODEM1k
+except ImportError:
+    pass
+try:
+    from telnetlib import Telnet
+    import http.server
+    import socketserver
 except ImportError:
     pass
 import yaml
@@ -40,7 +47,9 @@ firmware_info = {
     'rootfs_1': '0x02100000',
     "homekit": "0x03a00000",
     "AppData": "0x03b00000",
-    "resvered_bb": "0x7320000"
+    "resvered_bb": "0x7320000",
+    # fake offset for silabs_ncp_bt
+    "silabs_ncp_bt": "0xf0000000"
 }
 
 
@@ -266,15 +275,17 @@ def generate_firmware_for_fw_update(fwfile, fwtype):
 
     if not os.path.exists(fwfile):
         print("The file {} is not exist!".format(fwfile))
-        return
+        return None
     if not firmware_type.get(fwtype):
         print("The type {} is incorrect!".format(fwtype))
-        return
+        return None
     with open(fwfile, 'rb') as f_in:
         raw = f_in.read(16)
         if raw[:4] == b'cr6c' or raw[:4] == b'r6cr':
             print("It is ready for fw_update!")
-            return
+            return fwfile
+    with open(fwfile, 'rb') as f_in:
+        raw = f_in.read()
     data = calc_checksum_of_firmware(fwfile)
     fwsize = os.stat(fwfile).st_size
     filename = "{}_fw_update.bin".format(os.path.splitext(fwfile)[0])
@@ -294,39 +305,59 @@ def generate_firmware_for_fw_update(fwfile, fwtype):
             f_out.write(data.to_bytes(4, byteorder='big', signed=False))
     print("Generated {} ({}) done.".format(
         filename, os.stat(filename).st_size))
+    return filename
 
 
-def extract_firmwares(fwfile):
+def _extract_firmwares(fwfile):
     """ extract firmwares """
-
     # 0x2e00 (apploader.bin)
     # sizeof(full.gbl)_and_other_10bytes
     # full.gbl 10bytes linux  ota-files.bin 10bytes rootfs.bin cert
 
     with open(fwfile, 'rb') as f_in:
-        pos = 0x2e03
-        # bypass bootloader.gbl
-        f_in.seek(pos)
+        # Header
+        header_length = 17
+        f_in.seek(header_length)
+        data = f_in.read(4).hex()
+        bl_gbl_length = int(data, 16)
+        f_in.read(4)
+        fwversion = int(f_in.read(2).hex(), 16)
+        # bootloader.gbl
+        data = f_in.read(bl_gbl_length - 10)
+        if data[:4] != b'\xeb\x17\xa6\x03':
+            return False
+        with open('bootloader_{}.gbl'.format(fwversion), 'wb') as f_out:
+            f_out.write(data)
         data = f_in.read(4).hex()
         full_gbl_length = int(data, 16)
-        # bypass full.gbl
-        f_in.seek(pos + full_gbl_length)
+        f_in.read(4)
+        fwversion = int(f_in.read(2).hex(), 16)
+        # full.gbl
+        data = f_in.read(full_gbl_length - 10)
+        if data[:4] != b'\xeb\x17\xa6\x03':
+            return False
+        with open('full_{}.gbl'.format(fwversion), 'wb') as f_out:
+            f_out.write(data)
+        f_in.seek(header_length + bl_gbl_length + full_gbl_length)
         data = f_in.read(4).hex()
         linux_length = int(data, 16)
-        f_in.seek(pos + full_gbl_length + 10)
+        f_in.seek(header_length + bl_gbl_length + full_gbl_length + 10)
         data = f_in.read(linux_length - 10)
         if data[:4] != b'cr6c':
             return False
         with open('linux.bin', 'wb') as f_out:
             f_out.write(data)
-        f_in.seek(pos + full_gbl_length + linux_length)
+        f_in.seek(header_length + bl_gbl_length + full_gbl_length +
+                  linux_length)
         data = f_in.read(4).hex()
         ota_file_length = int(data, 16)
         # bypass ota-file
-        f_in.seek(pos + full_gbl_length + linux_length + ota_file_length)
+        f_in.seek(header_length + bl_gbl_length + full_gbl_length +
+                  linux_length + ota_file_length)
         data = f_in.read(4).hex()
         rootfs_length = int(data, 16)
-        f_in.seek(pos + full_gbl_length + linux_length + ota_file_length + 10)
+        f_in.seek(header_length + bl_gbl_length + full_gbl_length +
+                  linux_length + ota_file_length + 10)
         data = f_in.read(rootfs_length - 10)
         if data[:4] != b'r6cr':
             return False
@@ -351,7 +382,7 @@ def wait_for_realtek_cli(console):
         data = str(console.read_until(), encoding="utf-8")
 
 
-def enter_bootrom_console_and_get_ready(console, debug=False):
+def _enter_bootrom_console_and_get_ready(console, debug=False):
     """ Enter bootrom cli and init ddr and flash """
     print("Please power up gateway3!")
     print("If your gateway3 is powered up,"
@@ -436,6 +467,8 @@ def _bootrom_download_flasher(params, console, in_flasher):
     # baud rate (speed)     =   38400   |  115200   |  230400   |   460800
     # error rate            = 0.0046875 | 0.0046875 | 0.0046918 | 0.04333550
     flasher_baudrate = 230400
+    # PyInstaller creates a temp folder and stores path in _MEIPASS
+    base_path = getattr(sys, '_MEIPASS', os.getcwd())
 
     try:
         if not in_flasher:
@@ -454,7 +487,7 @@ def _bootrom_download_flasher(params, console, in_flasher):
     def putc(data, timeout=1):
         return console.write(data)
 
-    fwsize = os.stat("./flasher.bin").st_size
+    fwsize = os.stat("{}/flasher.bin".format(base_path)).st_size
 
     if 'pyprind' in sys.modules:
         def putc_user(data, timeout=1):
@@ -468,7 +501,7 @@ def _bootrom_download_flasher(params, console, in_flasher):
         modem = XMODEM(getc, putc)
 
     if not in_flasher:
-        if not enter_bootrom_console_and_get_ready(console, params['debug']):
+        if not _enter_bootrom_console_and_get_ready(console, params['debug']):
             print("The gateway is not ready for download!")
             return None
 
@@ -484,7 +517,7 @@ def _bootrom_download_flasher(params, console, in_flasher):
                                     params['baudrate'],
                                     timeout=10)
 
-        with open("./flasher.bin", 'rb') as f_in:
+        with open("{}/flasher.bin".format(base_path), 'rb') as f_in:
             modem.send(f_in)
 
         console.write("j a0000000\n".encode())
@@ -502,7 +535,7 @@ def _bootrom_download_flasher(params, console, in_flasher):
     return console
 
 
-def update_boot_info(console, fw_type, new_sum, new_size):
+def _update_boot_info(console, fw_type, new_sum, new_size):
     """ update boot info partition """
 
     command = "boot_ctrl set_{} {} {}\n".format(
@@ -646,7 +679,7 @@ def burn_by_xmodem(params, in_flasher=False):
     wait_for_realtek_cli(console)
 
     sum_firmware = calc_sum_of_firmware(params['fwfile'])
-    update_boot_info(console, params['fwtype'], sum_firmware, fwsize)
+    _update_boot_info(console, params['fwtype'], sum_firmware, fwsize)
 
     console.close()
     if remove_rawfile and os.path.exists(params['fwfile']):
@@ -717,7 +750,7 @@ def burn_by_tftp(params, in_flasher=False):
 
     wait_for_realtek_cli(console)
     sum_firmware = calc_sum_of_firmware(params['fwfile'])
-    update_boot_info(console, params['fwtype'],
+    _update_boot_info(console, params['fwtype'],
                      sum_firmware, os.stat(params['fwfile']).st_size)
 
     if os.path.exists("{}_padding".format(params['fwfile'])):
@@ -728,57 +761,186 @@ def burn_by_tftp(params, in_flasher=False):
     return True
 
 
+def _prepare_firmware(fwfile, fwtype):
+    with open(fwfile, 'rb') as f_in:
+        raw = f_in.read(16)
+        if raw[:4] != b'cr6c' and raw[:4] != b'r6cr':
+            if raw[:4] == b'hsqs':
+                pass
+            elif raw[:8] == b'\x00\x00\x00\x00\x00\x00\x00\x00':
+                raw = f_in.read(48)
+                if raw[28:36] == b'\x21\x80\x00\x00\x00\x60\x90\x40':
+                    pass
+                else:
+                    print("The {} is invaild firmware for fw_update.".format(
+                        fwfile))
+                    return None
+            else:
+                print("The {} is invaild firmware for fw_update.".format(
+                      fwfile))
+                return None
+            return generate_firmware_for_fw_update(fwfile, fwtype)
+        return fwfile
+
+
+def _http_server():
+    thrd = threading.currentThread()
+    base_path = getattr(thrd, "base_path", "./")
+    port = getattr(thrd, "port", 8000)
+
+    try:
+        if os.path.isdir(base_path):
+            os.chdir(base_path)
+            open("{}/favicon.ico".format(base_path), 'a').close()
+        handler = http.server.SimpleHTTPRequestHandler
+        handler.log_message = lambda a, b, c, d, f: None
+        with socketserver.TCPServer(("", port), handler) as httpd:
+            while getattr(thrd, "running", True):
+                httpd.handle_request()
+    except KeyboardInterrupt:
+        # print('Keyboard interrupt received: EXITING')
+        return
+    except (ConnectionResetError, FileNotFoundError):
+        pass
+#    except Exception:
+#        pass
+    finally:
+        if os.path.exists("{}/favicon.ico".format(base_path)):
+            os.remove("{}/favicon.ico".format(base_path))
+
+
+def burn_via_telnet(params, http_server=False, close_http_server=False):
+    # pylint: disable=too-many-statements
+    """ burn_firmware by telnet """
+    http_server_port = 8000
+
+    if ("telnetlib" not in sys.modules or "http.server" not in sys.modules
+            or "socketserver" not in sys.modules):
+        print("Please install telnetlib, http.server and socketserver!")
+        return False
+
+    fwfile = _prepare_firmware(params['fwfile'], params['fwtype'])
+    if fwfile is None:
+        print("Prepare firmware Failed!")
+        return False
+
+    try:
+        console = Telnet(params['ipaddr'], 23)
+    except TimeoutError:
+        print("Cannot connect to gateway 3!")
+        return False
+    console.write(b"\n")
+    console.read_until(b"login: ")
+    console.write(b"admin\n")
+    console.read_until(b"\n# ")
+
+    console.write(b"boot_ctrl show\n")
+    raw = console.read_until(b"\n# ")
+
+    if "linux" in params['fwtype']:
+        data = str(raw)[str(raw).find("kernel:") + 10]
+        print("Gateway currently booted kernel slot is {} "
+              "and will flash another slot.".format(data))
+    if "rootfs" in params['fwtype']:
+        data = str(raw)[str(raw).find("rootfs:") + 10]
+        print("Gateway currently booted rootfs slot is {} "
+              "and will flash another slot.".format(data))
+
+    if not http_server:
+        httpserver_thread = threading.Thread(target=_http_server)
+        httpserver_thread.base_path = os.path.dirname(
+            os.path.abspath(fwfile))
+        httpserver_thread.port = http_server_port
+        httpserver_thread.start()
+
+    host_ip = socket.gethostbyname(socket.gethostname())
+
+    command = "wget http://{}:{}/{} -O /tmp/{}\n".format(
+        host_ip, os.path.basename(fwfile),
+        http_server_port,
+        os.path.basename(fwfile))
+    console.write(command.encode())
+    console.read_until(b"\n# ")
+    if params['fwtype'] == 'silabs_ncp_bt':
+        fwversion = '125' if re.search(
+            r'_([0-9])+.gbl', fwfile) is None else fwversion.group(1)
+
+        command = "run_ble_dfu.sh /dev/ttyS1 {} {} 1\n".format(
+            os.path.basename(fwfile), fwversion)
+        console.write(command.encode())
+    else:
+        command = "fw_update /tmp/{}\n".format(os.path.basename(fwfile))
+        console.write(command.encode())
+        raw = console.read_until(b"\n# ")
+        if 'Success' in str(raw):
+            print("fw_update successfully!")
+        else:
+            print("fw_update failed!")
+
+    if close_http_server:
+        httpserver_thread.running = False
+        # hotfix_http_thread
+        data = 'favicon.ico'
+        command = "wget http://{0}:{1}/{2} -O /tmp/{2}\n".format(
+                host_ip, http_server_port, data)
+        console.write(command.encode())
+        httpserver_thread.join()
+    if os.path.basename(fwfile) != os.path.basename(params['fwfile']):
+        os.remove(fwfile)
+    console.close()
+
+    return True
+
+
 def burn_all_firmwares(params):
     """ burn all firmwares by tftp """
-    if not params['tftp'] and not params['xmodem']:
-        print("Currently only support tftp or xmodem!")
+    if not params['tftp'] and not params['xmodem'] and not params['telnet']:
+        print("Currently only support tftp, xmodem and telnet!")
         return
 
-    if not extract_firmwares(params['fwfile']):
+    if not _extract_firmwares(params['fwfile']):
         print("The {} is invaild!".format(params['fwfile']))
         return
     fwversion = re.search(
-        r'([0-9].[0-9].[0-9]_[0-9]+)', params['fwfile']).group(1)
+        r'([0-9].[0-9].[0-9]_[0-9]+)', params['fwfile'])
 
-    if fwversion is None:
-        fwversion = ''
-    else:
-        fwversion = "_{}".format(fwversion)
+    fwversion = '' if fwversion is None else "_{}".format(fwversion.group(1))
 
-    with open('linux.bin', 'rb') as f_in:
-        f_in.seek(16)
-        with open('linux{}.bin_raw'.format(fwversion), 'wb') as f_out:
-            f_out.write(f_in.read())
-    os.remove('linux.bin')
-    params['fwfile'] = 'linux{}.bin_raw'.format(fwversion)
+    os.rename('linux.bin', 'linux{}.bin'.format(fwversion))
+    params['fwfile'] = 'linux{}.bin'.format(fwversion)
     params['fwtype'] = 'kernel{}'.format(params['fwtype'][-2:])
     params['offset'] = params['linux_offset']
     if params['tftp']:
         burn_by_tftp(params, in_flasher=False)
     elif params['xmodem']:
         burn_by_xmodem(params, in_flasher=False)
-    os.remove('linux{}.bin_raw'.format(fwversion))
+    elif params['telnet']:
+        burn_via_telnet(params, http_server=False)
 
-    with open('rootfs.bin', 'rb') as f_in:
-        f_in.seek(16)
-        with open('rootfs{}.bin_raw'.format(fwversion), 'wb') as f_out:
-            f_out.write(f_in.read())
-    os.remove('rootfs.bin')
-    params['fwfile'] = 'rootfs{}.bin_raw'.format(fwversion)
+    os.rename('rootfs.bin', 'rootfs{}.bin'.format(fwversion))
+    params['fwfile'] = 'rootfs{}.bin'.format(fwversion)
     params['fwtype'] = 'rootfs{}'.format(params['fwtype'][-2:])
     params['offset'] = params['rootfs_offset']
     if params['tftp']:
         burn_by_tftp(params, in_flasher=True)
     elif params['xmodem']:
         burn_by_xmodem(params, in_flasher=True)
-    os.remove('rootfs{}.bin_raw'.format(fwversion))
+    elif params['telnet']:
+        burn_via_telnet(params, http_server=True)
+
+    params['fwfile'] = 'full{}.gbl'.format(fwversion)
+    params['fwtype'] = 'silabs_ncp_bt'
+    if params['telnet']:
+        burn_via_telnet(params, http_server=True, close_http_server=True)
 
 
 def burn_firmware(params):
     # pylint: disable=too-many-return-statements, too-many-branches
     """ burn_firmware """
+    # PyInstaller creates a temp folder and stores path in _MEIPASS
+    base_path = getattr(sys, '_MEIPASS', os.getcwd())
 
-    if not os.path.exists("./flasher.bin"):
+    if not os.path.exists("{}/flasher.bin".format(base_path)):
         print("The flahser.bin is not exist!")
         return
     if not os.path.exists(params['fwfile']):
@@ -789,7 +951,7 @@ def burn_firmware(params):
 
     if 'all' in params['fwtype']:
         with open(params['fwfile'], 'rb') as f_in:
-            data = f_in.read()
+            data = f_in.read(16)
         if data[:4] != b'MIOT':
             print('{} is not vaild firmware file'.format(params['fwfile']))
             return
@@ -797,33 +959,38 @@ def burn_firmware(params):
         print('Unknow firmware type!')
         return
 
-    if "serial" not in sys.modules:
+    if "serial" not in sys.modules and (params['tftp'] or params['xmodem']):
         print("Need install pyserial for python!")
         return
 
-    if not _check_comport_exist(params['comport']):
+    if not params['telnet'] and not _check_comport_exist(params['comport']):
         return
+
+    if 'all' in params['fwtype']:
+        params['linux_offset'] = firmware_info.get(
+            'linux{}'.format(params['fwtype'][-2:]), '0')
+        params['rootfs_offset'] = firmware_info.get(
+            'rootfs{}'.format(params['fwtype'][-2:]), '0')
+
+        if params['telnet']:
+            print("Please power up your gateway and make sure it already "
+                "connected to WiFI AP!")
+        burn_all_firmwares(params)
+        return
+
     if params['tftp']:
-        if 'all' in params['fwtype']:
-            params['linux_offset'] = firmware_info.get(
-                'linux{}'.format(params['fwtype'][-2:]), '0')
-            params['rootfs_offset'] = firmware_info.get(
-                'rootfs{}'.format(params['fwtype'][-2:]), '0')
-            burn_all_firmwares(params)
-        else:
-            params['offset'] = offset
-            burn_by_tftp(params)
+        params['offset'] = offset
+        burn_by_tftp(params)
         return
     if params['xmodem']:
-        if 'all' in params['fwtype']:
-            params['linux_offset'] = firmware_info.get(
-                'linux{}'.format(params['fwtype'][-2:]), '0')
-            params['rootfs_offset'] = firmware_info.get(
-                'rootfs{}'.format(params['fwtype'][-2:]), '0')
-            burn_all_firmwares(params)
-        else:
-            params['offset'] = offset
-            burn_by_xmodem(params)
+        params['offset'] = offset
+        burn_by_xmodem(params)
+        return
+    if params['telnet']:
+        params['offset'] = offset
+        print("Please power up your gateway and make sure it already "
+              "connected to WiFI AP!")
+        burn_via_telnet(params)
         return
     # just for test
     burn_by_uart(params)
@@ -905,7 +1072,7 @@ def main():
     Using Python to burn firmware via UART/Xmodem/Tftp
     '''
 
-    basic_version = "0.0.2"
+    basic_version = "0.0.3"
 
     parser = argparse.ArgumentParser(
         description='Gateway 3 Utils {}'.format(basic_version),
@@ -918,15 +1085,20 @@ def main():
                        help='Use xmodem')
     group.add_argument('-p', '--tftp', action='store_true',
                        help='Use tftp')
+    group.add_argument('-n', '--telnet', action='store_true',
+                       help='Use telnet/http server')
     group.add_argument('-f', '--fle', dest='fwfile',
                        help='firmware file')
     group.add_argument('-t', '--fwype', dest='fwtype',
                        help='The type of firmware, '
-                       '[linux_0|linux_1|rootfs_0|rootfs_1|all_0|all_1]')
+                       '[silabs_ncp_bt|linux_0|linux_1|'
+                       'rootfs_0|rootfs_1|all_0|all_1]')
     group.add_argument('-c', '--comport', dest='comport',
                        help='The com port')
     group.add_argument('-b', '--baudrate', dest='baudrate',
                        help='baudrate')
+    group.add_argument('-r', '--ipaddr', dest='ipaddr',
+                       help='The gateway 3 ip address')
     group.add_argument('-i', '--boot_info', dest='info_file',
                        help='Calc boot_info')
     group.add_argument('-l', '--cmdline', dest='cmdline',
@@ -980,6 +1152,7 @@ def main():
     params = {'ddr_base': '0xa1000000',
               'xmodem': args.xmodem,
               'tftp': args.tftp,
+              'telnet': args.telnet,
               'comport': args.comport,
               'baudrate': baudrate,
               'fwtype': args.fwtype,
@@ -987,6 +1160,11 @@ def main():
               'debug': args.debug}
     if args.backup and args.fwfile and args.comport:
         backup_partition(params)
+        return
+
+    if args.telnet and args.fwfile and args.fwtype and args.ipaddr:
+        params['ipaddr'] = args.ipaddr
+        burn_firmware(params)
         return
 
     if args.fwfile and args.fwtype and args.comport:
@@ -998,6 +1176,7 @@ def main():
             return
         burn_firmware(params)
         return
+
     print("Invaild arguments, Use -h or --help to known how to use.")
 
 
