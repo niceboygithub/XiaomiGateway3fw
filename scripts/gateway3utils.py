@@ -104,6 +104,9 @@ def calc_sum_of_firmware(fwfile, log=False):
     modified_firmware_sum = {
         "rootfs_1.4.7_0065_modified.bin": 0x742c
     }
+    if not os.path.exists(fwfile):
+        print("The {} is not exist!".format(fwfile))
+        return '0000'
 
     nsum = 0x0
     with open(fwfile, 'rb') as f_in:
@@ -802,6 +805,9 @@ def _http_server():
         return
     except (ConnectionResetError, FileNotFoundError):
         pass
+    except OSError:
+        print("Create http server error")
+        return
 #    except Exception:
 #        pass
     finally:
@@ -855,12 +861,13 @@ def burn_via_telnet(params, http_server=False, close_http_server=False):
 
     host_ip = socket.gethostbyname(socket.gethostname())
 
-    command = "wget http://{}:{}/{} -O /tmp/{}\n".format(
-        host_ip, os.path.basename(fwfile),
-        http_server_port,
+    command = "wget http://{0}:{1}/{2} -O /tmp/{2}\n".format(
+        host_ip, http_server_port,
         os.path.basename(fwfile))
+
     console.write(command.encode())
     console.read_until(b"\n# ")
+
     if params['fwtype'] == 'silabs_ncp_bt':
         fwversion = '125' if re.search(
             r'_([0-9])+.gbl', fwfile) is None else fwversion.group(1)
@@ -1090,7 +1097,7 @@ def main():
     group.add_argument('-f', '--fle', dest='fwfile',
                        help='firmware file')
     group.add_argument('-t', '--fwype', dest='fwtype',
-                       help='The type of firmware, '
+                       help='The type of firmware is '
                        '[silabs_ncp_bt|linux_0|linux_1|'
                        'rootfs_0|rootfs_1|all_0|all_1]')
     group.add_argument('-c', '--comport', dest='comport',
