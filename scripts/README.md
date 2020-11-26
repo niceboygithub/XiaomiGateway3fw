@@ -36,6 +36,7 @@ cd scripts
 python gateway3utils.py -n -r [IP ADDRESS] -t rootfs_0 -f ..\original\1.4.6_0012\rootfs_1.4.6_0012.bin
 ```
 3-e. Update rootfs to slot 1 via telnet.
+-    Notice: if got Windows Defender Firewall alert, pleasse click 'Allow access'.
 ```bash
 cd scripts
 python gateway3utils.py -n -r [IP ADDRESS] -t rootfs_1 -f ..\modified\1.4.7_0065\rootfs_1.4.7_0065_modified.bin

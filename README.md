@@ -8,10 +8,11 @@ The repository includes the following feature.
 - User boot_ctrl switch slot 0 or slot 1.
 - Better Busybox
 - Dropbearmulti for ssh
+- dgbserver
 
 2. raw firmware
 
-    If using dd or bootloader to flash, need to use raw typen with padded (boundary 0x20000).
+    If using dd or bootloader to flash, need to use raw file with padded (boundary 0x20000).
 
 3. modified firmware
 
@@ -27,7 +28,7 @@ fw_update linux.bin
 ```
 - Update Silicon Lab. EFR32BG by run_ble_dfu.sh, for example:
 ```
-run_ble_dfu.sh /dev/ttyS1 full.gbl_1.4.7_0065.bin 107 1
+run_ble_dfu.sh /dev/ttyS1 full_125.gbl 125 1
 ```
 
 5. stock firmware
@@ -36,3 +37,5 @@ run_ble_dfu.sh /dev/ttyS1 full.gbl_1.4.7_0065.bin 107 1
 
    The python script utility to generate firmware, calcuate checksum of boot_info and other functions.
 [howto](https://github.com/niceboygithub/XiaomiGateway3fw/blob/master/scripts/README.md "howto")
+
+<a href="https://www.buymeacoffee.com/niceboygithub" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
