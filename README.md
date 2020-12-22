@@ -9,6 +9,7 @@ The repository includes the following feature.
 - Better Busybox
 - Dropbearmulti for ssh
 - dgbserver
+- startup.sh (above 1.4.7_0115, you can copy to /data/scripts/startup.sh before upgrade to 1.4.7_0115, it will enable tty and telnetd without modified rootfs)
 
 2. raw firmware
 
